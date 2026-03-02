@@ -1,90 +1,148 @@
 # IPTV Manager Pro
 
-Desktop application for downloading, editing, reviewing and playing M3U/IPTV playlists.
+Desktop application for downloading, editing, reviewing and playing M3U/IPTV playlists from a single interface.
 
-## Features
+## Highlights
 
-- Download IPTV playlists from a provider URL
+- Download playlists directly from provider URLs
 - Load and edit local `.m3u` files
-- Remove channels or whole groups
-- Add PIN metadata to channels or groups
-- Search channels live
+- Remove channels or full groups before export
+- Add PIN metadata to selected channels or entire groups
+- Search channels live while browsing loaded data
 - Detect duplicate channels across groups
-- Import URLs from text files
-- Save imported URLs as M3U playlists
-- Embedded mini video player in the edit tab (via `python-vlc`)
+- Import URLs from text files and classify M3U vs direct streams
+- Save imported URLs as local M3U playlists
+- Play direct streams or grouped playlists through VLC
+- Built-in mini preview area plus VLC integration
 - Multi-language UI: English, Romanian, German, Spanish
 
-## Requirements
+## Tech Stack
 
 - Python 3.10+
+- Tkinter GUI
+- `requests`
+- `python-vlc`
 - VLC Media Player installed locally
-- Python packages from `requirements.txt`
 
-## Installation
+## Quick Start
 
-```bash
+### Windows PowerShell
+
+```powershell
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+python gui.py
 ```
 
-Linux/macOS:
+### Linux or macOS
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Running
-
-```bash
 python gui.py
 ```
 
-## VLC Path
+## Requirements
 
-The app tries to auto-detect VLC.  
-You can also override it with an environment variable:
+- Python 3.10 or newer
+- VLC Media Player available on the system
+- Internet connection for downloading remote playlists
 
-```bash
-IPTV_MANAGER_VLC_PATH=/path/to/vlc
-```
+## VLC Configuration
 
-Windows PowerShell:
+The app tries to auto-detect VLC in common install paths.
+
+If detection fails, set the executable path manually through the `IPTV_MANAGER_VLC_PATH` environment variable.
+
+Example on Windows PowerShell:
 
 ```powershell
 $env:IPTV_MANAGER_VLC_PATH="C:\Program Files\VideoLAN\VLC\vlc.exe"
 python gui.py
 ```
 
-## Building
+Example on Linux or macOS:
 
-If you want to build a Windows executable with PyInstaller:
+```bash
+export IPTV_MANAGER_VLC_PATH=/path/to/vlc
+python3 gui.py
+```
+
+## Main Workflows
+
+### 1. Download a provider playlist
+
+- Open the download section
+- Paste the full provider URL
+- Save the downloaded `.m3u` file locally
+
+### 2. Edit an existing M3U file
+
+- Load a local `.m3u` file
+- Browse groups and channels
+- Remove channels or groups you do not want
+- Add PIN metadata where needed
+- Export the updated file
+
+### 3. Import URLs from text files
+
+- Load a `.txt` file with one URL per line
+- Review detected M3U playlist links and direct stream links
+- Save the detected M3U URLs as local playlists
+- Send a direct stream or grouped playlist to VLC
+
+## Build a Windows Executable
+
+The repository includes a PyInstaller spec file.
 
 ```bash
 pip install pyinstaller
 pyinstaller gui.spec
 ```
 
-## Open Source Notes
+The generated executable is typically created under `dist/`.
 
-- No private IPTV credentials should be committed.
-- Example placeholder values are used in the UI by default.
-- Provider URLs, usernames and passwords should be entered locally by each user.
+## Project Structure
 
-## Disclaimer
+```text
+gui.py             Main Tkinter application
+config.py          Theme, fonts and VLC path detection
+i18n.py            UI translations
+m3u_utils.py       M3U loading, editing and export helpers
+m3u_processor.py   M3U writing helpers
+url_manager.py     URL import and export helpers
+vlc_manager.py     VLC launch and playback integration
+gui.spec           PyInstaller build configuration
+```
 
-This project is a generic playlist manager/player.  
-Use it only with content and services you are authorized to access.
+## Known Limitations
 
-## Donations
+- VLC must be installed separately for full playback integration
+- Some providers use formats or tags that may need custom handling
+- Playback reliability depends on the remote stream and local VLC setup
+- The packaged executable is Windows-oriented via the current `gui.spec`
+- No credentials or provider-specific secrets should be committed to the repository
 
-If you want to support the project, you can use this BTC address:
+## Security and Privacy
 
-`1H15oBFdpHZJggMYf9gsMcdXeFjkdT5QU6`
+- Do not commit provider usernames, passwords or private playlist URLs
+- Use placeholder values in screenshots or demos
+- Keep personal IPTV subscription data local to your machine
+
+## Roadmap Ideas
+
+- Prebuilt GitHub Releases for Windows
+- Better validation for malformed playlists
+- Drag-and-drop file loading
+- More playlist cleanup and filtering tools
+- Optional dark/light theme presets exposed in settings
 
 ## License
 
-MIT
+MIT. See [LICENSE](LICENSE).
+
+## Disclaimer
+
+This is a generic playlist manager and player. Use it only with content and services you are authorized to access.
