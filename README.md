@@ -104,6 +104,27 @@ pyinstaller gui.spec
 
 The generated executable is typically created under `dist/`.
 
+## Releases
+
+For GitHub Releases, attach the Windows build from `dist/gui.exe`.
+
+Suggested first release title:
+
+`IPTV Manager Pro v0.1.0`
+
+Suggested release notes template:
+
+- First public release
+- M3U download, edit and export workflows
+- URL import from text files
+- Duplicate channel detection
+- VLC playback integration
+- Multi-language interface
+
+## Screenshots
+
+Recommended screenshots and naming guidance are documented in `docs/screenshots/README.md`.
+
 ## Project Structure
 
 ```text
@@ -115,6 +136,7 @@ m3u_processor.py   M3U writing helpers
 url_manager.py     URL import and export helpers
 vlc_manager.py     VLC launch and playback integration
 gui.spec           PyInstaller build configuration
+docs/              GitHub/release support files
 ```
 
 ## Known Limitations
