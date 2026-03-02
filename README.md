@@ -139,6 +139,14 @@ gui.spec           PyInstaller build configuration
 - More playlist cleanup and filtering tools
 - Optional dark/light theme presets exposed in settings
 
+## Support
+
+If you want to support development of this project, you can use this BTC address:
+
+`1H15oBFdpHZJggMYf9gsMcdXeFjkdT5QU6`
+
+Support is optional and does not grant access to any IPTV service, playlist, subscription or private content.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
