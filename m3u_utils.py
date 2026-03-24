@@ -68,7 +68,20 @@ class M3UHandler:
         self._undo_snapshot = None
 
     def download_iptv(self, entries):
-        full_url = entries["URL Complet"].get()
+        full_url_entry = entries.get("url_full") or entries.get("URL Complet")
+        if full_url_entry is None:
+            messagebox.showerror("Eroare", "Campul pentru URL-ul complet nu a fost gasit.")
+            self._status("Eroare: lipseste campul URL complet")
+            self._log("Download IPTV esuat: lipseste cheia pentru URL complet", level="ERROR")
+            return
+
+        full_url = full_url_entry.get().strip()
+        if not full_url:
+            messagebox.showerror("Eroare", "Introdu un URL complet inainte de descarcare.")
+            self._status("Eroare: URL complet gol")
+            self._log("Download IPTV esuat: URL complet gol", level="ERROR")
+            return
+
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
 
         http_url = full_url.replace("https://", "http://")

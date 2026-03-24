@@ -1,10 +1,10 @@
 import tkinter as tk
 import threading
-import urllib.error
-import urllib.request
 import sys
 from datetime import datetime
 from tkinter import ttk
+
+import requests
 
 from config import FONTS, THEME, THEME_PRESETS, VLC_PATH
 from i18n import DEFAULT_LANG, tr
@@ -332,20 +332,21 @@ class IPTVManagerApp:
 
         entries = [
             (
+                "url_full",
                 self.t("url_full"),
                 "https://example.com/get.php?username=demo_user&password=demo_password&type=m3u_plus&output=ts",
             ),
-            (self.t("url_server"), "https://example.com"),
-            (self.t("username"), ""),
-            (self.t("password"), "", True),
+            ("url_server", self.t("url_server"), "https://example.com"),
+            ("username", self.t("username"), ""),
+            ("password", self.t("password"), "", True),
         ]
         self.download_entries = {}
-        for i, (label, default, *args) in enumerate(entries, start=1):
+        for i, (field_key, label, default, *args) in enumerate(entries, start=1):
             ttk.Label(card, text=label).grid(row=i, column=0, sticky="w", pady=8, padx=(0, 8))
             entry = ttk.Entry(card, show="*" if args else "")
             entry.grid(row=i, column=1, sticky="ew", pady=8)
             entry.insert(0, default)
-            self.download_entries[label.strip(":")] = entry
+            self.download_entries[field_key] = entry
 
         download_btn = ttk.Button(
             card,
@@ -874,15 +875,40 @@ class IPTVManagerApp:
             f"text_len={text_len} group='{self.group_var.get()}' items={self.channel_listbox.size()}"
         )
 
+    def _probe_stream(self, raw_url):
+        # IPTV links sometimes append custom headers after "|" which break direct HTTP probing.
+        probe_url = (raw_url or "").strip().split("|", 1)[0].strip()
+        if not probe_url:
+            raise ValueError("URL gol")
+        if not probe_url.lower().startswith(("http://", "https://")):
+            raise ValueError("URL invalid pentru probe (doar http/https)")
+
+        headers = {"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"}
+        with requests.Session() as session:
+            session.trust_env = False
+            response = session.get(
+                probe_url,
+                headers=headers,
+                timeout=6,
+                verify=False,
+                allow_redirects=True,
+                stream=True,
+            )
+            try:
+                code = response.status_code
+                ctype = response.headers.get("Content-Type", "necunoscut")
+                if code >= 400:
+                    raise requests.HTTPError(response=response)
+            finally:
+                response.close()
+        return code, ctype
+
     def _edit_probe_worker(self, url):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                code = getattr(resp, "status", None) or resp.getcode()
-                ctype = resp.headers.get("Content-Type", "necunoscut")
+            code, ctype = self._probe_stream(url)
             self.root.after(0, lambda: self._set_edit_preview_status(f"OK ({code}) - {ctype}", "INFO"))
-        except urllib.error.HTTPError as e:
-            code = getattr(e, "code", "unknown")
+        except requests.HTTPError as e:
+            code = getattr(getattr(e, "response", None), "status_code", "unknown")
             self.root.after(0, lambda code=code: self._set_edit_preview_status(f"HTTP error: {code}", "WARN"))
         except Exception as e:
             msg = str(e)
@@ -1219,14 +1245,11 @@ class IPTVManagerApp:
 
     def _preview_probe_worker(self, url):
         try:
-            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-512"})
-            with urllib.request.urlopen(req, timeout=6) as resp:
-                code = getattr(resp, "status", None) or resp.getcode()
-                ctype = resp.headers.get("Content-Type", "necunoscut")
+            code, ctype = self._probe_stream(url)
             msg = f"OK ({code}) - {ctype}"
             self.root.after(0, lambda: self._set_preview_status(msg, "INFO"))
-        except urllib.error.HTTPError as e:
-            code = getattr(e, "code", "unknown")
+        except requests.HTTPError as e:
+            code = getattr(getattr(e, "response", None), "status_code", "unknown")
             self.root.after(0, lambda code=code: self._set_preview_status(f"HTTP error: {code}", "WARN"))
         except Exception as e:
             msg = str(e)
