@@ -47,7 +47,17 @@ class IPTVManagerApp:
         self.embedded_playing_url = ""
         self.embedded_paused = False
         self.video_controls_popup = None
+        self.video_controls_owner = None
+        self.video_controls_pinned = False
         self._controls_keepalive_job = None
+        self.fullscreen_video_window = None
+        self.fullscreen_video_frame = None
+        self.fullscreen_controls_bar = None
+        self.fullscreen_vlc_instance = None
+        self.fullscreen_player = None
+        self.fullscreen_playing_url = ""
+        self.fullscreen_resume_url = ""
+        self.fullscreen_paused = False
 
         self.vlc = VLCManager(VLC_PATH)
         self.m3u = M3UHandler(self)
@@ -495,9 +505,7 @@ class IPTVManagerApp:
         self._build_video_controls_popup()
         self._hide_controls_job = None
 
-        self.edit_video_frame.bind("<Enter>", self._on_video_hover_enter)
-        self.edit_video_frame.bind("<Leave>", self._on_video_hover_leave)
-        self.edit_video_frame.bind("<Motion>", self._on_video_hover_enter)
+        self._bind_video_surface_events(self.edit_video_frame)
 
         self.root.after(100, self._ensure_embedded_player_ready)
 
@@ -648,8 +656,9 @@ class IPTVManagerApp:
         self.root.bind_all("<Control-z>", lambda event: self.m3u.undo_last_action())
         self.root.bind_all("<Delete>", lambda event: self.m3u.remove_selected())
         self.root.bind_all("<Control-f>", self.focus_search)
+        self.root.bind_all("<Alt-Return>", self.toggle_video_fullscreen)
         self.root.bind_all("<F11>", lambda event: self.toggle_kiosk_mode())
-        self.root.bind_all("<Escape>", self.exit_kiosk_mode)
+        self.root.bind_all("<Escape>", self.handle_escape)
 
     def focus_search(self, event=None):
         if hasattr(self, "channel_search_entry"):
@@ -945,42 +954,220 @@ class IPTVManagerApp:
             self._set_edit_preview_status(f"Mini player indisponibil: {e}", "ERROR")
             return False
 
-    def _bind_embedded_video_surface(self):
-        if self.embedded_player is None or not hasattr(self, "edit_video_frame"):
-            return
-        self.edit_video_frame.update_idletasks()
-        win_id = self.edit_video_frame.winfo_id()
-        if sys.platform.startswith("win"):
-            self.embedded_player.set_hwnd(win_id)
-        elif sys.platform.startswith("linux"):
-            self.embedded_player.set_xwindow(win_id)
-        elif sys.platform == "darwin":
-            self.embedded_player.set_nsobject(win_id)
+    def _bind_video_surface_events(self, widget):
+        widget.bind("<Enter>", self._on_video_hover_enter)
+        widget.bind("<Leave>", self._on_video_hover_leave)
+        widget.bind("<Double-1>", self.toggle_video_fullscreen)
 
-    def play_edit_embedded_video(self):
+    def _get_active_video_widget(self):
+        if self.fullscreen_video_frame is not None:
+            try:
+                if self.fullscreen_video_frame.winfo_exists():
+                    return self.fullscreen_video_frame
+            except Exception:
+                pass
+        if hasattr(self, "edit_video_frame") and self.edit_video_frame is not None:
+            try:
+                if self.edit_video_frame.winfo_exists():
+                    return self.edit_video_frame
+            except Exception:
+                pass
+        return None
+
+    def _bind_player_surface(self, player, target):
+        if player is None or target is None:
+            return
+        target.update_idletasks()
+        win_id = target.winfo_id()
+        if sys.platform.startswith("win"):
+            player.set_hwnd(win_id)
+        elif sys.platform.startswith("linux"):
+            player.set_xwindow(win_id)
+        elif sys.platform == "darwin":
+            player.set_nsobject(win_id)
+
+    def _bind_embedded_video_surface(self):
+        if not hasattr(self, "edit_video_frame") or self.edit_video_frame is None:
+            return
+        self._bind_player_surface(self.embedded_player, self.edit_video_frame)
+
+    def _bind_fullscreen_video_surface(self):
+        if self.fullscreen_video_frame is None:
+            return
+        self._bind_player_surface(self.fullscreen_player, self.fullscreen_video_frame)
+
+    def _build_vlc_media(self, instance, url):
+        media = instance.media_new(url)
+        media.add_option(":network-caching=2000")
+        media.add_option(":live-caching=2000")
+        media.add_option(":quiet")
+        return media
+
+    def _get_active_player(self):
+        if self.fullscreen_video_window is not None and self.fullscreen_player is not None:
+            return self.fullscreen_player
+        return self.embedded_player
+
+    def toggle_video_fullscreen(self, event=None):
+        if self.fullscreen_video_window is not None:
+            self._exit_video_fullscreen()
+        else:
+            self._enter_video_fullscreen()
+
+    def _enter_video_fullscreen(self):
+        if self.fullscreen_video_window is not None:
+            return
         if self.vlc_py is None:
             self._set_edit_preview_status("Instaleaza python-vlc pentru video embedded", "WARN")
             return
-        resolved = self._sync_edit_preview_url_from_ui() or self._resolve_edit_preview_url()
+        resolved = self._sync_edit_preview_url_from_ui() or self._resolve_edit_preview_url() or self.embedded_playing_url
+        if not resolved:
+            self._set_edit_preview_status(self.t("select_url_first"), "WARN")
+            return
+
+        win = tk.Toplevel(self.root)
+        win.configure(bg="#000000")
+        win.attributes("-fullscreen", True)
+        win.attributes("-topmost", True)
+        win.bind("<Escape>", self._exit_video_fullscreen)
+        win.bind("<Double-1>", self.toggle_video_fullscreen)
+        win.protocol("WM_DELETE_WINDOW", self._exit_video_fullscreen)
+
+        shell = tk.Frame(win, bg="#000000")
+        shell.pack(fill="both", expand=True)
+
+        frame = tk.Frame(shell, bg="#000000", highlightthickness=0, bd=0)
+        frame.pack(fill="both", expand=True)
+        self._bind_video_surface_events(frame)
+
+        controls = tk.Frame(shell, bg="#111111", padx=10, pady=10)
+        controls.pack(fill="x", side="bottom")
+        ttk.Button(controls, text=self.t("back"), command=self.play_prev_channel).pack(side=tk.LEFT, padx=4)
+        ttk.Button(controls, text=self.t("play_video"), command=self.play_edit_embedded_video).pack(side=tk.LEFT, padx=4)
+        ttk.Button(controls, text=self.t("pause_resume"), command=self.toggle_pause_edit_video).pack(side=tk.LEFT, padx=4)
+        ttk.Button(controls, text=self.t("next"), command=self.play_next_channel).pack(side=tk.LEFT, padx=4)
+        ttk.Button(controls, text=self.t("stop"), command=self.stop_edit_video).pack(side=tk.LEFT, padx=4)
+        ttk.Button(controls, text=self.t("fullscreen_off"), command=self.toggle_video_fullscreen).pack(side=tk.RIGHT, padx=4)
+
+        self.fullscreen_video_window = win
+        self.fullscreen_video_frame = frame
+        self.fullscreen_controls_bar = controls
+        self.fullscreen_resume_url = self.embedded_playing_url or resolved
+        self.video_controls_pinned = False
+        self._hide_video_controls(force=True)
+
+        try:
+            win.focus_force()
+        except Exception:
+            pass
+
+        if self.embedded_player is not None:
+            try:
+                self.embedded_player.stop()
+            except Exception:
+                pass
+        self.embedded_playing_url = ""
+        self.embedded_paused = False
+
+        self.root.after(80, lambda url=resolved: self._play_fullscreen_video(url))
+        self._set_edit_preview_status("Video fullscreen activ. Esc sau dublu-click pentru iesire.", "INFO")
+
+    def _exit_video_fullscreen(self, event=None, resume_embedded=True):
+        resume_url = self.fullscreen_playing_url or self.fullscreen_resume_url
+        player = self.fullscreen_player
+        instance = self.fullscreen_vlc_instance
+        win = self.fullscreen_video_window
+        self.fullscreen_video_window = None
+        self.fullscreen_video_frame = None
+        self.fullscreen_controls_bar = None
+        self.fullscreen_player = None
+        self.fullscreen_vlc_instance = None
+        self.fullscreen_playing_url = ""
+        self.fullscreen_paused = False
+        self.fullscreen_resume_url = ""
+        if player is not None:
+            try:
+                player.stop()
+            except Exception:
+                pass
+            try:
+                player.release()
+            except Exception:
+                pass
+        if instance is not None:
+            try:
+                instance.release()
+            except Exception:
+                pass
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+        if resume_embedded and resume_url:
+            self.root.after(100, lambda url=resume_url: self.play_edit_embedded_video(url=url))
+        self._set_edit_preview_status("Video fullscreen inchis.", "INFO")
+
+    def _play_fullscreen_video(self, url):
+        if self.fullscreen_video_window is None or self.fullscreen_video_frame is None:
+            return
+        try:
+            if self.fullscreen_vlc_instance is None:
+                self.fullscreen_vlc_instance = self.vlc_py.Instance(
+                    "--no-video-title-show",
+                    "--quiet",
+                    "--verbose=-1",
+                    "--network-caching=2000",
+                    "--live-caching=2000",
+                )
+            if self.fullscreen_player is None:
+                self.fullscreen_player = self.fullscreen_vlc_instance.media_player_new()
+            self._bind_fullscreen_video_surface()
+            media = self._build_vlc_media(self.fullscreen_vlc_instance, url)
+            self.fullscreen_player.set_media(media)
+            self.fullscreen_player.play()
+            self.fullscreen_playing_url = url
+            self.fullscreen_paused = False
+            self.root.after(220, self._after_fullscreen_play_fix)
+        except Exception as e:
+            self._set_edit_preview_status(f"Eroare fullscreen video: {e}", "ERROR")
+            return
+        self.log(f"Fullscreen video play: {url[:100]}")
+
+    def _after_fullscreen_play_fix(self):
+        try:
+            self._bind_fullscreen_video_surface()
+            if self.fullscreen_player is not None:
+                self.fullscreen_player.video_set_scale(0)
+                self.fullscreen_player.video_set_aspect_ratio(None)
+        except Exception:
+            pass
+
+    def play_edit_embedded_video(self, url=None):
+        if self.vlc_py is None:
+            self._set_edit_preview_status("Instaleaza python-vlc pentru video embedded", "WARN")
+            return
+        resolved = url or self._sync_edit_preview_url_from_ui() or self._resolve_edit_preview_url()
         if not resolved:
             self._set_edit_preview_status(self.t("select_url_first"), "WARN")
             return
         if not resolved.lower().startswith(("http://", "https://")):
             self._set_edit_preview_status("URL invalid pentru redare", "WARN")
             return
+        if self.fullscreen_video_window is not None:
+            self._play_fullscreen_video(resolved)
+            return
         if not self._ensure_embedded_player_ready():
             return
         try:
             self._bind_embedded_video_surface()
-            media = self.embedded_vlc_instance.media_new(resolved)
-            media.add_option(":network-caching=2000")
-            media.add_option(":live-caching=2000")
-            media.add_option(":quiet")
+            media = self._build_vlc_media(self.embedded_vlc_instance, resolved)
             self.embedded_player.set_media(media)
             self.embedded_player.play()
             self.root.after(220, self._after_play_video_fix)
             self.embedded_playing_url = resolved
             self.embedded_paused = False
+            self.video_controls_pinned = True
             self._show_video_controls_popup()
             self._set_edit_preview_status(self.t("video_started"), "INFO")
             self.log(f"Embedded video play: {resolved[:100]}")
@@ -999,25 +1186,34 @@ class IPTVManagerApp:
     def on_tab_changed(self, event=None):
         current = self.notebook.tab(self.notebook.select(), "text")
         if current != self.t("tab_edit"):
+            self.video_controls_pinned = False
             self._hide_video_controls(force=True)
         else:
             if self.video_controls_popup is None or not self.video_controls_popup.winfo_exists():
                 self._build_video_controls_popup()
             if self.embedded_playing_url:
+                self.video_controls_pinned = True
                 self._show_video_controls_popup()
 
     def stop_edit_video(self):
         try:
+            if self.fullscreen_video_window is not None:
+                self._exit_video_fullscreen(resume_embedded=False)
             if self.embedded_player is not None:
                 self.embedded_player.stop()
             self.embedded_playing_url = ""
             self.embedded_paused = False
+            self.video_controls_pinned = False
             self._hide_video_controls(force=True)
             return True
         except Exception:
             return False
 
     def _on_video_hover_enter(self, event=None):
+        if self.fullscreen_video_window is not None:
+            return
+        if self.video_controls_pinned and self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
+            return
         if self._hide_controls_job is not None:
             self.root.after_cancel(self._hide_controls_job)
             self._hide_controls_job = None
@@ -1025,7 +1221,9 @@ class IPTVManagerApp:
         self._show_video_controls_popup()
 
     def _on_video_hover_leave(self, event=None):
-        if self.embedded_playing_url:
+        if self.fullscreen_video_window is not None:
+            return
+        if self.video_controls_pinned or self.embedded_playing_url:
             self._dbg("video hover leave ignored while playing")
             return
         if self._hide_controls_job is not None:
@@ -1033,6 +1231,14 @@ class IPTVManagerApp:
         self._hide_controls_job = self.root.after(180, self._hide_video_controls)
 
     def _hide_video_controls(self, force=False):
+        if self.fullscreen_video_window is not None:
+            if self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
+                self.video_controls_popup.withdraw()
+            self._hide_controls_job = None
+            return
+        if self.video_controls_pinned and not force:
+            self._hide_controls_job = None
+            return
         if self.embedded_playing_url and not force:
             self._dbg("hide controls canceled while playing")
             self._hide_controls_job = None
@@ -1047,16 +1253,22 @@ class IPTVManagerApp:
     def _build_video_controls_popup(self):
         if self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
             self.video_controls_popup.destroy()
-        popup = tk.Toplevel(self.root)
+        owner = self.fullscreen_video_window if self.fullscreen_video_window is not None else self.root
+        popup = tk.Toplevel(owner)
         popup.withdraw()
         popup.overrideredirect(True)
         popup.attributes("-topmost", True)
+        try:
+            popup.transient(owner)
+        except Exception:
+            pass
         popup.configure(bg="#111111")
 
         wrap = tk.Frame(popup, bg="#111111", padx=6, pady=6)
         wrap.pack(fill="both", expand=True)
         ttk.Button(wrap, text=self.t("back"), command=self.play_prev_channel).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("play_video"), command=self.play_edit_embedded_video).pack(side=tk.LEFT, padx=3)
+        ttk.Button(wrap, text=self.t("video_fullscreen"), command=self.toggle_video_fullscreen).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("pause_resume"), command=self.toggle_pause_edit_video).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("next"), command=self.play_next_channel).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("stop"), command=self.stop_edit_video).pack(side=tk.LEFT, padx=3)
@@ -1066,25 +1278,44 @@ class IPTVManagerApp:
         wrap.bind("<Enter>", self._on_video_hover_enter)
         wrap.bind("<Leave>", self._on_video_hover_leave)
         self.video_controls_popup = popup
+        self.video_controls_owner = owner
 
     def _show_video_controls_popup(self):
-        if self.video_controls_popup is None or not self.video_controls_popup.winfo_exists():
+        if self.fullscreen_video_window is not None:
+            if self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
+                self.video_controls_popup.withdraw()
+            return
+        desired_owner = self.fullscreen_video_window if self.fullscreen_video_window is not None else self.root
+        if (
+            self.video_controls_popup is None
+            or not self.video_controls_popup.winfo_exists()
+            or self.video_controls_owner is not desired_owner
+        ):
             self._build_video_controls_popup()
-        if not hasattr(self, "edit_video_frame") or not self.edit_video_frame.winfo_exists():
+        target = self._get_active_video_widget()
+        if target is None:
             return
         self.video_controls_popup.update_idletasks()
-        fw = self.edit_video_frame.winfo_width()
-        fh = self.edit_video_frame.winfo_height()
-        fx = self.edit_video_frame.winfo_rootx()
-        fy = self.edit_video_frame.winfo_rooty()
+        fw = target.winfo_width()
+        fh = target.winfo_height()
+        fx = target.winfo_rootx()
+        fy = target.winfo_rooty()
         pw = self.video_controls_popup.winfo_reqwidth()
         ph = self.video_controls_popup.winfo_reqheight()
         x = fx + max(6, (fw - pw) // 2)
         y = fy + max(6, fh - ph - 8)
         self.video_controls_popup.geometry(f"+{x}+{y}")
         self.video_controls_popup.deiconify()
-        self.video_controls_popup.lift()
+        try:
+            self.video_controls_popup.lift(desired_owner)
+        except Exception:
+            self.video_controls_popup.lift()
         self._dbg(f"show controls popup x={x} y={y}")
+        if self.video_controls_pinned:
+            if self._controls_keepalive_job is not None:
+                self.root.after_cancel(self._controls_keepalive_job)
+                self._controls_keepalive_job = None
+            return
         self._schedule_controls_keepalive()
 
     def _schedule_controls_keepalive(self):
@@ -1096,7 +1327,10 @@ class IPTVManagerApp:
         if self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
             try:
                 if self.video_controls_popup.state() != "withdrawn":
-                    self.video_controls_popup.lift()
+                    if self.video_controls_owner is not None:
+                        self.video_controls_popup.lift(self.video_controls_owner)
+                    else:
+                        self.video_controls_popup.lift()
                     self._controls_keepalive_job = self.root.after(220, self._keep_controls_on_top)
                     return
             except Exception:
@@ -1110,15 +1344,23 @@ class IPTVManagerApp:
         if self.video_controls_popup is not None and self.video_controls_popup.winfo_exists():
             self.video_controls_popup.destroy()
         self.video_controls_popup = None
+        self.video_controls_owner = None
+        self.video_controls_pinned = False
 
     def toggle_pause_edit_video(self):
-        if self.embedded_player is None:
+        player = self._get_active_player()
+        if player is None:
             self._set_edit_preview_status("Mini player inactiv", "WARN")
             return
         try:
-            self.embedded_player.pause()
-            self.embedded_paused = not self.embedded_paused
-            state = "Pauza" if self.embedded_paused else "Resume"
+            player.pause()
+            if self.fullscreen_video_window is not None:
+                self.fullscreen_paused = not self.fullscreen_paused
+                paused = self.fullscreen_paused
+            else:
+                self.embedded_paused = not self.embedded_paused
+                paused = self.embedded_paused
+            state = "Pauza" if paused else "Resume"
             self._set_edit_preview_status(state, "INFO")
         except Exception as e:
             self._set_edit_preview_status(f"Eroare pause/resume: {e}", "ERROR")
@@ -1447,6 +1689,12 @@ class IPTVManagerApp:
     def exit_kiosk_mode(self, event=None):
         if self.kiosk_mode:
             self.toggle_kiosk_mode()
+
+    def handle_escape(self, event=None):
+        if self.fullscreen_video_window is not None:
+            self._exit_video_fullscreen()
+            return "break"
+        self.exit_kiosk_mode(event)
 
 
 if __name__ == "__main__":
