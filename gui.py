@@ -49,7 +49,13 @@ class IPTVManagerApp:
         self.video_controls_popup = None
         self.video_controls_owner = None
         self.video_controls_pinned = False
+        self.video_seek_var = tk.DoubleVar(value=0.0)
+        self.video_seek_pos_var = tk.StringVar(value="00:00")
+        self.video_seek_total_var = tk.StringVar(value="--:--")
+        self.video_seek_scale = None
         self._controls_keepalive_job = None
+        self._seek_update_job = None
+        self._seek_dragging = False
         self.fullscreen_video_window = None
         self.fullscreen_video_frame = None
         self.fullscreen_controls_bar = None
@@ -58,6 +64,10 @@ class IPTVManagerApp:
         self.fullscreen_playing_url = ""
         self.fullscreen_resume_url = ""
         self.fullscreen_paused = False
+        self.fullscreen_seek_var = tk.DoubleVar(value=0.0)
+        self.fullscreen_seek_pos_var = tk.StringVar(value="00:00")
+        self.fullscreen_seek_total_var = tk.StringVar(value="--:--")
+        self.fullscreen_seek_scale = None
 
         self.vlc = VLCManager(VLC_PATH)
         self.m3u = M3UHandler(self)
@@ -1003,6 +1013,161 @@ class IPTVManagerApp:
         media.add_option(":quiet")
         return media
 
+    def _format_media_time(self, ms):
+        total_seconds = max(0, int(ms // 1000))
+        hours, rem = divmod(total_seconds, 3600)
+        minutes, seconds = divmod(rem, 60)
+        if hours:
+            return f"{hours}:{minutes:02d}:{seconds:02d}"
+        return f"{minutes:02d}:{seconds:02d}"
+
+    def _get_player_seek_state(self, player):
+        if player is None:
+            return False, 0, 0
+        try:
+            length_ms = max(0, int(player.get_length()))
+        except Exception:
+            length_ms = 0
+        try:
+            current_ms = max(0, int(player.get_time()))
+        except Exception:
+            current_ms = 0
+        try:
+            can_seek = bool(player.is_seekable())
+        except Exception:
+            can_seek = length_ms > 0
+        can_seek = can_seek and length_ms > 1000
+        return can_seek, current_ms, length_ms
+
+    def _bind_seek_scale_events(self, scale):
+        scale.bind("<ButtonPress-1>", self._on_seek_press)
+        scale.bind("<ButtonRelease-1>", self._on_seek_release)
+
+    def _build_seek_controls(self, parent, *, fullscreen=False):
+        row = tk.Frame(parent, bg="#111111")
+        row.pack(fill="x", pady=(8, 0))
+
+        pos_var = self.fullscreen_seek_pos_var if fullscreen else self.video_seek_pos_var
+        total_var = self.fullscreen_seek_total_var if fullscreen else self.video_seek_total_var
+        seek_var = self.fullscreen_seek_var if fullscreen else self.video_seek_var
+
+        tk.Label(row, textvariable=pos_var, bg="#111111", fg="#f3f4f6", width=7, anchor="w").pack(side=tk.LEFT)
+        scale = tk.Scale(
+            row,
+            from_=0,
+            to=100,
+            orient="horizontal",
+            showvalue=0,
+            resolution=1000,
+            variable=seek_var,
+            bg="#111111",
+            fg="#f3f4f6",
+            troughcolor="#2c2c2c",
+            highlightthickness=0,
+            bd=0,
+            sliderrelief="flat",
+            activebackground="#4b7bec",
+        )
+        scale.pack(side=tk.LEFT, fill="x", expand=True, padx=8)
+        tk.Label(row, textvariable=total_var, bg="#111111", fg="#f3f4f6", width=7, anchor="e").pack(side=tk.RIGHT)
+        self._bind_seek_scale_events(scale)
+
+        if fullscreen:
+            self.fullscreen_seek_scale = scale
+        else:
+            self.video_seek_scale = scale
+        self._set_seek_controls_enabled(scale, False)
+
+    def _set_seek_controls_enabled(self, scale, enabled):
+        if scale is None:
+            return
+        try:
+            scale.configure(state=(tk.NORMAL if enabled else tk.DISABLED))
+        except Exception:
+            pass
+
+    def _sync_seek_controls(self):
+        player = self._get_active_player()
+        can_seek, current_ms, length_ms = self._get_player_seek_state(player)
+
+        pos_text = self._format_media_time(current_ms)
+        total_text = self._format_media_time(length_ms) if can_seek else "LIVE"
+
+        self.video_seek_pos_var.set(pos_text)
+        self.video_seek_total_var.set(total_text)
+        self.fullscreen_seek_pos_var.set(pos_text)
+        self.fullscreen_seek_total_var.set(total_text)
+
+        if not self._seek_dragging:
+            if self.video_seek_scale is not None:
+                try:
+                    self.video_seek_scale.configure(to=max(length_ms, 1000))
+                    self.video_seek_var.set(current_ms)
+                except Exception:
+                    self.video_seek_scale = None
+            if self.fullscreen_seek_scale is not None:
+                try:
+                    self.fullscreen_seek_scale.configure(to=max(length_ms, 1000))
+                    self.fullscreen_seek_var.set(current_ms)
+                except Exception:
+                    self.fullscreen_seek_scale = None
+
+        self._set_seek_controls_enabled(self.video_seek_scale, can_seek)
+        self._set_seek_controls_enabled(self.fullscreen_seek_scale, can_seek)
+
+    def _schedule_seek_updates(self):
+        if self._seek_update_job is not None:
+            self.root.after_cancel(self._seek_update_job)
+        self._seek_update_job = self.root.after(400, self._refresh_seek_controls)
+
+    def _refresh_seek_controls(self):
+        self._seek_update_job = None
+        if self.fullscreen_video_window is None and not self.embedded_playing_url:
+            self._reset_seek_controls()
+            return
+        if self.fullscreen_video_window is not None and not self.fullscreen_playing_url:
+            self._reset_seek_controls()
+            return
+        self._sync_seek_controls()
+        self._schedule_seek_updates()
+
+    def _reset_seek_controls(self):
+        self.video_seek_var.set(0.0)
+        self.fullscreen_seek_var.set(0.0)
+        self.video_seek_pos_var.set("00:00")
+        self.fullscreen_seek_pos_var.set("00:00")
+        self.video_seek_total_var.set("--:--")
+        self.fullscreen_seek_total_var.set("--:--")
+        self._set_seek_controls_enabled(self.video_seek_scale, False)
+        self._set_seek_controls_enabled(self.fullscreen_seek_scale, False)
+
+    def _on_seek_press(self, event=None):
+        self._seek_dragging = True
+
+    def _on_seek_release(self, event=None):
+        player = self._get_active_player()
+        if player is None:
+            self._seek_dragging = False
+            return
+        can_seek, _, length_ms = self._get_player_seek_state(player)
+        if not can_seek:
+            self._seek_dragging = False
+            self._sync_seek_controls()
+            return
+
+        if self.fullscreen_video_window is not None:
+            target_ms = int(self.fullscreen_seek_var.get())
+        else:
+            target_ms = int(self.video_seek_var.get())
+        target_ms = max(0, min(target_ms, length_ms))
+        try:
+            player.set_time(target_ms)
+        except Exception:
+            pass
+        self._seek_dragging = False
+        self._sync_seek_controls()
+        self._schedule_seek_updates()
+
     def _get_active_player(self):
         if self.fullscreen_video_window is not None and self.fullscreen_player is not None:
             return self.fullscreen_player
@@ -1048,6 +1213,7 @@ class IPTVManagerApp:
         ttk.Button(controls, text=self.t("next"), command=self.play_next_channel).pack(side=tk.LEFT, padx=4)
         ttk.Button(controls, text=self.t("stop"), command=self.stop_edit_video).pack(side=tk.LEFT, padx=4)
         ttk.Button(controls, text=self.t("fullscreen_off"), command=self.toggle_video_fullscreen).pack(side=tk.RIGHT, padx=4)
+        self._build_seek_controls(controls, fullscreen=True)
 
         self.fullscreen_video_window = win
         self.fullscreen_video_frame = frame
@@ -1080,6 +1246,7 @@ class IPTVManagerApp:
         self.fullscreen_video_window = None
         self.fullscreen_video_frame = None
         self.fullscreen_controls_bar = None
+        self.fullscreen_seek_scale = None
         self.fullscreen_player = None
         self.fullscreen_vlc_instance = None
         self.fullscreen_playing_url = ""
@@ -1145,6 +1312,8 @@ class IPTVManagerApp:
         except Exception as e:
             self._set_edit_preview_status(f"Eroare fullscreen video: {e}", "ERROR")
             return
+        self._sync_seek_controls()
+        self._schedule_seek_updates()
         self.log(f"Fullscreen video play: {url[:100]}")
 
     def _after_fullscreen_play_fix(self):
@@ -1182,6 +1351,8 @@ class IPTVManagerApp:
             self.embedded_paused = False
             self.video_controls_pinned = True
             self._show_video_controls_popup()
+            self._sync_seek_controls()
+            self._schedule_seek_updates()
             self._set_edit_preview_status(self.t("video_started"), "INFO")
             self.log(f"Embedded video play: {resolved[:100]}")
         except Exception as e:
@@ -1216,7 +1387,12 @@ class IPTVManagerApp:
                 self.embedded_player.stop()
             self.embedded_playing_url = ""
             self.embedded_paused = False
+            self.fullscreen_playing_url = ""
             self.video_controls_pinned = False
+            if self._seek_update_job is not None:
+                self.root.after_cancel(self._seek_update_job)
+                self._seek_update_job = None
+            self._reset_seek_controls()
             self._hide_video_controls(force=True)
             return True
         except Exception:
@@ -1285,6 +1461,7 @@ class IPTVManagerApp:
         ttk.Button(wrap, text=self.t("pause_resume"), command=self.toggle_pause_edit_video).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("next"), command=self.play_next_channel).pack(side=tk.LEFT, padx=3)
         ttk.Button(wrap, text=self.t("stop"), command=self.stop_edit_video).pack(side=tk.LEFT, padx=3)
+        self._build_seek_controls(wrap, fullscreen=False)
 
         popup.bind("<Enter>", self._on_video_hover_enter)
         popup.bind("<Leave>", self._on_video_hover_leave)
@@ -1359,6 +1536,7 @@ class IPTVManagerApp:
         self.video_controls_popup = None
         self.video_controls_owner = None
         self.video_controls_pinned = False
+        self.video_seek_scale = None
 
     def toggle_pause_edit_video(self):
         player = self._get_active_player()

@@ -97,16 +97,27 @@ python3 gui.py
 
 The repository includes a PyInstaller spec file.
 
-```bash
+```powershell
 pip install pyinstaller
-pyinstaller gui.spec
+python -m PyInstaller gui.spec --clean
 ```
 
-The generated executable is typically created under `dist/`.
+The generated Windows executable is created at `dist/gui.exe`.
+
+This build uses the bundled spec and opens as a normal desktop app without a console window.
+
+To prepare a GitHub Release archive:
+
+```powershell
+Compress-Archive -Path dist\gui.exe -DestinationPath dist\IPTV-Manager-Pro-windows.zip -Force
+```
 
 ## Releases
 
-For GitHub Releases, attach the Windows build from `dist/gui.exe`.
+For GitHub Releases, attach either:
+
+- `dist/gui.exe`
+- `dist/IPTV-Manager-Pro-windows.zip`
 
 Suggested first release title:
 
