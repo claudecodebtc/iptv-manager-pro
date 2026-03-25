@@ -1105,8 +1105,21 @@ class IPTVManagerApp:
             except Exception:
                 pass
         if resume_embedded and resume_url:
-            self.root.after(100, lambda url=resume_url: self.play_edit_embedded_video(url=url))
+            self.root.after(100, lambda url=resume_url: self._restore_embedded_video_after_fullscreen(url))
         self._set_edit_preview_status("Video fullscreen inchis.", "INFO")
+
+    def _restore_embedded_video_after_fullscreen(self, url):
+        self.video_controls_pinned = True
+        self.play_edit_embedded_video(url=url)
+        self.root.after(320, self._ensure_embedded_controls_visible)
+
+    def _ensure_embedded_controls_visible(self):
+        if self.fullscreen_video_window is not None:
+            return
+        if not self.embedded_playing_url:
+            return
+        self.video_controls_pinned = True
+        self._show_video_controls_popup()
 
     def _play_fullscreen_video(self, url):
         if self.fullscreen_video_window is None or self.fullscreen_video_frame is None:
